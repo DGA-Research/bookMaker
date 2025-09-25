@@ -5,7 +5,7 @@ from typing import Dict, List, Tuple
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
@@ -78,14 +78,13 @@ def build_combined_document(filtered_sections: List[Tuple[str, List]]) -> BytesI
     section_style_name = ensure_section_style(combined)
 
     add_table_of_contents(combined, section_style_name)
-    insert_page_break(combined)
+    combined.add_page_break()
 
     for index, (section_name, files) in enumerate(filtered_sections):
-        if index > 0:
-            insert_page_break(combined)
-
         heading = combined.add_paragraph(section_name, style=section_style_name)
         heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        if index > 0:
+            heading.paragraph_format.page_break_before = True
 
         for uploaded_file in files:
             file_bytes = uploaded_file.getvalue()
@@ -122,11 +121,6 @@ def add_table_of_contents(document: Document, section_style_name: str) -> None:
         f'TOC \\h \\z \\t "{section_style_name},1"',
         "Update this table in Word to populate the entries.",
     )
-
-
-def insert_page_break(document: Document) -> None:
-    paragraph = document.add_paragraph()
-    paragraph.add_run().add_break(WD_BREAK.PAGE)
 
 
 def apply_footer_with_page_numbers(document: Document) -> None:
