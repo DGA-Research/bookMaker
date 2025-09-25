@@ -1,19 +1,13 @@
 import streamlit as st
 from io import BytesIO
 from copy import deepcopy
-from itertools import count
 from typing import Dict, List, Tuple
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
-from docx.enum.text import (
-    WD_ALIGN_PARAGRAPH,
-    WD_TAB_ALIGNMENT,
-    WD_TAB_LEADER,
-)
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches
 
 SECTION_ORDER = [
     "Top Hits",
@@ -30,8 +24,6 @@ SECTION_ORDER = [
     "Travel Discosureles",
     "Offical Office Disbursments",
 ]
-
-BOOKMARK_COUNTER = count(1)
 
 
 def main() -> None:
@@ -85,26 +77,16 @@ def build_combined_document(filtered_sections: List[Tuple[str, List]]) -> BytesI
     remove_initial_paragraph_if_empty(combined)
     section_style_name = ensure_section_style(combined)
 
-    sections_with_meta = [
-        {
-            "name": section_name,
-            "files": files,
-            "bookmark": bookmark_name_from_section(section_name, position),
-        }
-        for position, (section_name, files) in enumerate(filtered_sections, start=1)
-    ]
-
-    add_table_of_contents(combined, sections_with_meta)
+    add_table_of_contents(combined, section_style_name)
     combined.add_page_break()
 
-    for index, section in enumerate(sections_with_meta):
+    for index, (section_name, files) in enumerate(filtered_sections):
         if index > 0:
             combined.add_page_break()
 
-        heading_paragraph = combined.add_paragraph(section["name"], style=section_style_name)
-        add_bookmark_to_paragraph(heading_paragraph, section["bookmark"])
+        combined.add_paragraph(section_name, style=section_style_name)
 
-        for uploaded_file in section["files"]:
+        for uploaded_file in files:
             file_bytes = uploaded_file.getvalue()
             source_doc = Document(BytesIO(file_bytes))
             append_document_body(combined, source_doc)
@@ -131,83 +113,14 @@ def ensure_section_style(document: Document) -> str:
     return style_name
 
 
-def bookmark_name_from_section(section_name: str, position: int) -> str:
-    sanitized = "".join(char for char in section_name if char.isalnum())
-    if not sanitized:
-        sanitized = f"Section{position}"
-    return f"bm_{position}_{sanitized[:32]}"
-
-
-def add_table_of_contents(document: Document, sections_with_meta) -> None:
+def add_table_of_contents(document: Document, section_style_name: str) -> None:
     document.add_paragraph("Table of Contents", style="Title")
-
-    if not sections_with_meta:
-        document.add_paragraph("No sections supplied.")
-        return
-
-    for section in sections_with_meta:
-        add_toc_entry(document, section["name"], section["bookmark"])
-
-    try:
-        document.add_paragraph("Update fields in Word to refresh page links.", style="Caption")
-    except KeyError:
-        document.add_paragraph("Update fields in Word to refresh page links.")
-
-
-def add_toc_entry(document: Document, label: str, bookmark_name: str) -> None:
-    paragraph = document.add_paragraph()
-    try:
-        paragraph.style = document.styles["TOC 1"]
-    except KeyError:
-        pass
-
-    paragraph.paragraph_format.tab_stops.add_tab_stop(
-        Inches(6), alignment=WD_TAB_ALIGNMENT.RIGHT, leader=WD_TAB_LEADER.DOTS
+    toc_paragraph = document.add_paragraph()
+    create_field_run(
+        toc_paragraph,
+        f'TOC \\h \\z \\t "{section_style_name},1"',
+        "Update this table in Word to populate the entries.",
     )
-
-    add_internal_hyperlink(paragraph, label, bookmark_name)
-    paragraph.add_run("\t")
-    create_field_run(paragraph, f"PAGEREF {bookmark_name} \\h", "1")
-
-
-def add_internal_hyperlink(paragraph, text: str, bookmark_name: str) -> None:
-    hyperlink = OxmlElement("w:hyperlink")
-    hyperlink.set(qn("w:anchor"), bookmark_name)
-
-    new_run = OxmlElement("w:r")
-    r_pr = OxmlElement("w:rPr")
-    r_style = OxmlElement("w:rStyle")
-    r_style.set(qn("w:val"), "Hyperlink")
-    r_pr.append(r_style)
-    new_run.append(r_pr)
-
-    text_element = OxmlElement("w:t")
-    text_element.text = text
-    new_run.append(text_element)
-
-    hyperlink.append(new_run)
-    paragraph._p.append(hyperlink)
-
-
-def add_bookmark_to_paragraph(paragraph, bookmark_name: str) -> None:
-    bookmark_id = next(BOOKMARK_COUNTER)
-    paragraph_text = paragraph.text
-
-    for run in list(paragraph.runs):
-        paragraph._p.remove(run._r)
-
-    start = OxmlElement("w:bookmarkStart")
-    start.set(qn("w:id"), str(bookmark_id))
-    start.set(qn("w:name"), bookmark_name)
-    paragraph._p.append(start)
-
-    paragraph.add_run(paragraph_text)
-
-    end = OxmlElement("w:bookmarkEnd")
-    end.set(qn("w:id"), str(bookmark_id))
-    paragraph._p.append(end)
-
-
 
 
 def apply_footer_with_page_numbers(document: Document) -> None:
@@ -231,6 +144,7 @@ def append_document_body(target: Document, source: Document) -> None:
         target.element.body.append(deepcopy(element))
 
 
+def create_field_run(paragraph, field_code: str, default_text: str = ""):
     run = paragraph.add_run()
 
     field_begin = OxmlElement("w:fldChar")
