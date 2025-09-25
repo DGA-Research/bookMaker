@@ -1,6 +1,6 @@
 from docx import Document
 
-path = 'combined_book (6).docx'
+path = 'combined_book (8).docx'
 doc = Document(path)
 for idx, para in enumerate(doc.paragraphs):
     ppr = para._p.pPr
