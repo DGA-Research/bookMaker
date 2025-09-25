@@ -26,7 +26,7 @@ SECTION_ORDER = [
 
 
 def main() -> None:
-    st.set_page_config(page_title="BookMaker", page_icon="book")
+    st.set_page_config(page_title="BookMaker", page_icon="📚")
     st.title("BookMaker")
     st.write(
         "Upload DOCX files by section to build a single, organized briefing book. "
@@ -34,7 +34,7 @@ def main() -> None:
     )
     st.info(
         "Current prototype supports DOCX files. PDFs would need converting to DOCX before combining.",
-        icon="i",
+        icon="ℹ️",
     )
 
     uploads: Dict[str, List] = {}
@@ -167,3 +167,4 @@ def remove_initial_paragraph_if_empty(document: Document) -> None:
 
 if __name__ == "__main__":
     main()
+
