@@ -5,7 +5,7 @@ from typing import Dict, List, Tuple
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
@@ -78,13 +78,14 @@ def build_combined_document(filtered_sections: List[Tuple[str, List]]) -> BytesI
     section_style_name = ensure_section_style(combined)
 
     add_table_of_contents(combined, section_style_name)
-    combined.add_page_break()
+    insert_page_break(combined)
 
     for index, (section_name, files) in enumerate(filtered_sections):
         if index > 0:
-            combined.add_page_break()
+            insert_page_break(combined)
 
-        combined.add_paragraph(section_name, style=section_style_name)
+        heading = combined.add_paragraph(section_name, style=section_style_name)
+        heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
         for uploaded_file in files:
             file_bytes = uploaded_file.getvalue()
@@ -123,6 +124,11 @@ def add_table_of_contents(document: Document, section_style_name: str) -> None:
     )
 
 
+def insert_page_break(document: Document) -> None:
+    paragraph = document.add_paragraph()
+    paragraph.add_run().add_break(WD_BREAK.PAGE)
+
+
 def apply_footer_with_page_numbers(document: Document) -> None:
     for section in document.sections:
         section.footer.is_linked_to_previous = False
@@ -140,7 +146,9 @@ def apply_footer_with_page_numbers(document: Document) -> None:
 
 
 def append_document_body(target: Document, source: Document) -> None:
-    for element in source.element.body:
+    for element in list(source.element.body):
+        if element.tag == qn("w:sectPr"):
+            continue
         target.element.body.append(deepcopy(element))
 
 
