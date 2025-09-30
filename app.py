@@ -35,6 +35,16 @@ WD_HEADER_FOOTER_PRIMARY = 1
 WD_ALIGN_PARAGRAPH_CENTER = 1
 
 
+def word_automation_available() -> bool:
+    if platform.system().lower() != "windows":
+        return False
+    try:
+        import win32com.client  # type: ignore
+    except ImportError:
+        return False
+    return True
+
+
 def main() -> None:
     st.set_page_config(page_title="BookMaker", page_icon="BM")
     st.title("BookMaker")
@@ -47,7 +57,7 @@ def main() -> None:
         icon="i",
     )
 
-    word_available = platform.system().lower() == "windows"
+    word_available = word_automation_available()
     method_label = "Document assembly method"
     if word_available:
         method = st.radio(
@@ -63,10 +73,16 @@ def main() -> None:
         )
     else:
         method = "Standard merge (python-docx)"
-        st.warning(
-            "Microsoft Word automation is only available on Windows. Falling back to python-docx merge.",
-            icon="!",
-        )
+        if platform.system().lower() == "windows":
+            st.info(
+                "Install 'pywin32' locally to enable the Word-based merge.",
+                icon="i",
+            )
+        else:
+            st.warning(
+                "Microsoft Word automation is only available on Windows. Falling back to python-docx merge.",
+                icon="!",
+            )
 
     uploads: Dict[str, List] = {}
     for section in SECTION_ORDER:
@@ -247,7 +263,7 @@ def add_table_of_contents(document: Document, section_style_name: str) -> None:
     toc_paragraph = document.add_paragraph()
     create_field_run(
         toc_paragraph,
-        f'TOC \h \z \t "{section_style_name},1"',
+        f'TOC \\h \\z \\t "{section_style_name},1"',
         "Update this table in Word to populate the entries.",
     )
 
