@@ -129,18 +129,27 @@ def build_combined_document(filtered_sections: List[Tuple[str, List]]) -> BytesI
     section_style_name = ensure_section_style(combined)
 
     add_table_of_contents(combined, section_style_name)
-    combined.add_page_break()
 
     for index, (section_name, files) in enumerate(filtered_sections):
-        if index > 0:
-            combined.add_page_break()
-
-        heading = combined.add_paragraph(section_name, style=section_style_name)
-        heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        heading_text = section_name
+        section_documents = []
+        heading_captured = False
 
         for uploaded_file in files:
             file_bytes = uploaded_file.getvalue()
             source_doc = Document(BytesIO(file_bytes))
+            if not heading_captured:
+                heading_text = extract_section_heading_text(source_doc, section_name)
+                heading_captured = True
+            else:
+                strip_leading_empty_paragraphs(source_doc)
+            section_documents.append(source_doc)
+
+        heading = combined.add_paragraph(heading_text, style=section_style_name)
+        heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        heading.paragraph_format.page_break_before = True
+
+        for source_doc in section_documents:
             append_document_body(combined, source_doc)
 
     apply_footer_with_page_numbers(combined)
@@ -164,23 +173,34 @@ def build_combined_document_with_word(filtered_sections: List[Tuple[str, List]])
 
     with tempfile.TemporaryDirectory() as tmpdir_str:
         tmpdir = Path(tmpdir_str)
-        section_paths: List[Tuple[str, List[Path]]] = []
+        section_payloads: List[Tuple[str, List[Path]]] = []
         for section_name, files in filtered_sections:
+            heading_text = section_name
             file_paths: List[Path] = []
+            heading_captured = False
             for index, uploaded_file in enumerate(files):
                 suffix = Path(getattr(uploaded_file, "name", "") or "document.docx").suffix or ".docx"
                 safe_name = _safe_stem(section_name)
                 file_path = tmpdir / f"{safe_name}_{index}{suffix}"
                 file_path.write_bytes(uploaded_file.getvalue())
+
+                doc = Document(file_path)
+                if not heading_captured:
+                    heading_text = extract_section_heading_text(doc, section_name)
+                    heading_captured = True
+                else:
+                    strip_leading_empty_paragraphs(doc)
+                doc.save(file_path)
+
                 file_paths.append(file_path)
-            section_paths.append((section_name, file_paths))
+            section_payloads.append((heading_text, file_paths))
 
         output_path = tmpdir / "combined.docx"
-        compose_sections_with_word(section_paths, output_path)
+        compose_sections_with_word(section_payloads, output_path)
         return BytesIO(output_path.read_bytes())
 
 
-def compose_sections_with_word(section_paths: List[Tuple[str, List[Path]]], output_path: Path) -> None:
+def compose_sections_with_word(section_payloads: List[Tuple[str, List[Path]]], output_path: Path) -> None:
     import win32com.client as win32  # type: ignore
 
     word = win32.Dispatch("Word.Application")
@@ -191,11 +211,11 @@ def compose_sections_with_word(section_paths: List[Tuple[str, List[Path]]], outp
         selection = word.Selection
         insert_table_of_contents_word(doc, selection)
 
-        for index, (section_name, files) in enumerate(section_paths):
+        for index, (heading_text, files) in enumerate(section_payloads):
             if index > 0:
                 selection.InsertBreak(WD_PAGE_BREAK)
             selection.Style = "Heading 1"
-            selection.TypeText(section_name)
+            selection.TypeText(heading_text)
             selection.TypeParagraph()
             for file_path in files:
                 selection.InsertFile(str(file_path))
@@ -291,6 +311,34 @@ def append_document_body(target: Document, source: Document) -> None:
         target.element.body.append(deepcopy(element))
 
 
+def paragraph_has_visible_content(paragraph) -> bool:
+    if paragraph.text.strip():
+        return True
+    element = paragraph._element
+    return bool(element.xpath('.//w:drawing') or element.xpath('.//w:pict'))
+
+
+
+def extract_section_heading_text(document: Document, fallback: str) -> str:
+    for paragraph in list(document.paragraphs):
+        if paragraph.text.strip():
+            heading_text = paragraph.text.strip()
+            remove_paragraph(paragraph)
+            return heading_text
+        if paragraph_has_visible_content(paragraph):
+            continue
+        remove_paragraph(paragraph)
+    return fallback
+
+
+
+def strip_leading_empty_paragraphs(document: Document) -> None:
+    for paragraph in list(document.paragraphs):
+        if paragraph.text.strip() or paragraph_has_visible_content(paragraph):
+            break
+        remove_paragraph(paragraph)
+
+
 def create_field_run(paragraph, field_code: str, default_text: str = ""):
     run = paragraph.add_run()
 
@@ -316,6 +364,13 @@ def create_field_run(paragraph, field_code: str, default_text: str = ""):
     run._r.append(field_end)
 
     return run
+
+
+def remove_paragraph(paragraph) -> None:
+    element = paragraph._element
+    parent = element.getparent()
+    if parent is not None:
+        parent.remove(element)
 
 
 def clear_paragraph(paragraph) -> None:
