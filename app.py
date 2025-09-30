@@ -129,11 +129,14 @@ def build_combined_document(filtered_sections: List[Tuple[str, List]]) -> BytesI
     section_style_name = ensure_section_style(combined)
 
     add_table_of_contents(combined, section_style_name)
+    combined.add_page_break()
 
     for index, (section_name, files) in enumerate(filtered_sections):
+        if index > 0:
+            combined.add_page_break()
+
         heading = combined.add_paragraph(section_name, style=section_style_name)
         heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        heading.paragraph_format.page_break_before = True
 
         for uploaded_file in files:
             file_bytes = uploaded_file.getvalue()
