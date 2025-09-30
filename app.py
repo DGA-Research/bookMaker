@@ -1,10 +1,14 @@
+
+"""Local CLI for assembling briefing books from DOCX parts."""
+
+import argparse
 import platform
-import streamlit as st
-from io import BytesIO
-from copy import deepcopy
-from typing import Dict, List, Tuple
+import sys
 import tempfile
+from copy import deepcopy
+from io import BytesIO
 from pathlib import Path
+from typing import Iterable, List, Tuple
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
@@ -12,7 +16,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
-SECTION_ORDER = [
+SECTION_ORDER: Tuple[str, ...] = (
     "Top Hits",
     "Methodology",
     "Biographical",
@@ -26,12 +30,146 @@ SECTION_ORDER = [
     "Scorecards",
     "Travel Discosureles",
     "Offical Office Disbursments",
-]
+)
+
+FILE_NAME_MAP = {
+    "Top Hits": "TOP HITS.docx",
+    "Methodology": "METHODOLOGY.docx",
+    "Biographical": "BIOGRAPHICAL.docx",
+    "Family/Personal Info": "FAMILY PERSONAL INFO.docx",
+    "Buisness Interests": "BUISNESS INTERESTS.docx",
+    "Race Review": "RACE REVIEW.docx",
+    "Campaign Finance": "CAMPAIGN FINANCE.docx",
+    "Issues": "ISSUES.docx",
+    "Appendicies": "APPENDICIES.docx",
+    "Questionaires": "QUESTIONNAIRES.docx",
+    "Scorecards": "SCORECARD.docx",
+    "Travel Discosureles": "TRAVEL DISCLOSURES.docx",
+    "Offical Office Disbursments": "OFFICIAL OFFICE DISBURSEMENTS.docx",
+}
 
 WD_PAGE_BREAK = 7
 WD_STORY = 6
 WD_HEADER_FOOTER_PRIMARY = 1
 WD_ALIGN_PARAGRAPH_CENTER = 1
+
+
+class LocalUpload:
+    """Minimal file-like wrapper to mimic Streamlit uploads."""
+
+    def __init__(self, path: Path) -> None:
+        self.name = path.name
+        self._bytes = path.read_bytes()
+
+    def getvalue(self) -> bytes:
+        return self._bytes
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Combine section DOCX files into a single briefing book.",
+    )
+    parser.add_argument(
+        "--parts-dir",
+        default="bookParts",
+        help="Directory containing the section DOCX files (default: bookParts).",
+    )
+    parser.add_argument(
+        "--output",
+        default="combined_book.docx",
+        help="Path for the generated DOCX (default: combined_book.docx).",
+    )
+    parser.add_argument(
+        "--method",
+        choices=["auto", "word", "python-docx"],
+        default="auto",
+        help=(
+            "word: use Microsoft Word automation; python-docx: pure Python merge; "
+            "auto: try word then fall back."
+        ),
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress non-error output.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    book_parts_dir = Path(args.parts_dir).resolve()
+    if not book_parts_dir.exists():
+        sys.exit(f"bookParts directory not found: {book_parts_dir}")
+
+    section_payloads = collect_section_payloads(book_parts_dir)
+    if not section_payloads:
+        sys.exit("No DOCX files discovered in the sections order.")
+
+    filtered_sections: List[Tuple[str, List[LocalUpload]]] = []
+    for section, paths in section_payloads:
+        uploads = [LocalUpload(path) for path in paths]
+        filtered_sections.append((section, uploads))
+
+    method = resolve_method_choice(args.method)
+    if method == "word" and not word_automation_available():
+        print(
+            "Microsoft Word automation unavailable; falling back to python-docx merge.",
+            file=sys.stderr,
+        )
+        method = "python-docx"
+
+    if method == "word":
+        buffer = build_combined_document_with_word(filtered_sections)
+    else:
+        buffer = build_combined_document(filtered_sections)
+
+    output_path = Path(args.output).resolve()
+    output_path.write_bytes(buffer.getvalue())
+
+    if not args.quiet:
+        print(f"Combined document written to {output_path}")
+        if method == "word":
+            print("Open the document in Word to confirm the TOC and pagination look correct.")
+        else:
+            print("Open the document in Word and update fields (Ctrl+A, F9) to refresh the TOC.")
+
+
+def resolve_method_choice(choice: str) -> str:
+    if choice == "auto":
+        return "word" if word_automation_available() else "python-docx"
+    return choice
+
+
+def collect_section_payloads(book_parts_dir: Path) -> List[Tuple[str, List[Path]]]:
+    payloads: List[Tuple[str, List[Path]]] = []
+    for section in SECTION_ORDER:
+        paths = list(iter_section_files(book_parts_dir, section))
+        if paths:
+            payloads.append((section, paths))
+        else:
+            print(
+                f"Warning: no DOCX files found for section '{section}' in {book_parts_dir}",
+                file=sys.stderr,
+            )
+    return payloads
+
+
+def iter_section_files(book_parts_dir: Path, section: str) -> Iterable[Path]:
+    safe_dir = book_parts_dir / _safe_stem(section)
+    if safe_dir.exists() and safe_dir.is_dir():
+        yield from sorted(
+            (p for p in safe_dir.glob("*.docx") if p.is_file()),
+            key=lambda p: p.name.lower(),
+        )
+        return
+
+    filename = FILE_NAME_MAP.get(section)
+    if filename:
+        candidate = book_parts_dir / filename
+        if candidate.exists():
+            yield candidate
 
 
 def word_automation_available() -> bool:
@@ -44,84 +182,6 @@ def word_automation_available() -> bool:
     return True
 
 
-def main() -> None:
-    st.set_page_config(page_title="BookMaker", page_icon="BM")
-    st.title("BookMaker")
-    st.write(
-        "Upload DOCX files by section to build a single, organized briefing book. "
-        "Each uploader maps to a section in the generated table of contents."
-    )
-    st.info(
-        "Current prototype supports DOCX files. PDFs would need converting to DOCX before combining.",
-    )
-
-    word_available = word_automation_available()
-    method_label = "Document assembly method"
-    if word_available:
-        method = st.radio(
-            method_label,
-            (
-                "Preserve layout (Microsoft Word)",
-                "Standard merge (python-docx)",
-            ),
-            help=(
-                "Word automation keeps original pagination, images, and layout intact. "
-                "python-docx does a structural merge and is cross-platform."
-            ),
-        )
-    else:
-        method = "Standard merge (python-docx)"
-        if platform.system().lower() == "windows":
-            st.info(
-                "Install 'pywin32' locally to enable the Word-based merge.",
-            )
-        else:
-            st.warning(
-                "Microsoft Word automation is only available on Windows. Falling back to python-docx merge.",
-            )
-
-    uploads: Dict[str, List] = {}
-    for section in SECTION_ORDER:
-        st.subheader(section)
-        uploads[section] = st.file_uploader(
-            f"Upload DOCX files for {section}",
-            type=["docx"],
-            accept_multiple_files=True,
-            key=section,
-            help="Files are appended in the order they appear below.",
-        )
-
-    if st.button("Generate combined document"):
-        filtered_sections: List[Tuple[str, List]] = [
-            (section, files)
-            for section, files in uploads.items()
-            if files
-        ]
-
-        if not filtered_sections:
-            st.warning("Upload at least one DOCX file before generating the book.")
-            return
-
-        try:
-            if method.startswith("Preserve"):
-                buffer = build_combined_document_with_word(filtered_sections)
-            else:
-                buffer = build_combined_document(filtered_sections)
-        except RuntimeError as exc:
-            st.error(str(exc))
-            return
-
-        st.success(
-            "Combined document ready. Open in Word and update fields to refresh the TOC and page numbers."
-        )
-        st.download_button(
-            label="Download combined DOCX",
-            data=buffer.getvalue(),
-            file_name="combined_book.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
-
-
 def build_combined_document(filtered_sections: List[Tuple[str, List]]) -> BytesIO:
     combined = Document()
     remove_initial_paragraph_if_empty(combined)
@@ -129,7 +189,7 @@ def build_combined_document(filtered_sections: List[Tuple[str, List]]) -> BytesI
 
     add_table_of_contents(combined, section_style_name)
 
-    for index, (section_name, files) in enumerate(filtered_sections):
+    for section_name, files in filtered_sections:
         heading_text = section_name
         section_documents = []
         heading_captured = False
@@ -317,7 +377,6 @@ def paragraph_has_visible_content(paragraph) -> bool:
     return bool(element.xpath('.//w:drawing') or element.xpath('.//w:pict'))
 
 
-
 def extract_section_heading_text(document: Document, fallback: str) -> str:
     for paragraph in list(document.paragraphs):
         if paragraph.text.strip():
@@ -328,7 +387,6 @@ def extract_section_heading_text(document: Document, fallback: str) -> str:
             continue
         remove_paragraph(paragraph)
     return fallback
-
 
 
 def strip_leading_empty_paragraphs(document: Document) -> None:
