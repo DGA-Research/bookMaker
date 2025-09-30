@@ -54,7 +54,6 @@ def main() -> None:
     )
     st.info(
         "Current prototype supports DOCX files. PDFs would need converting to DOCX before combining.",
-        icon="i",
     )
 
     word_available = word_automation_available()
@@ -76,12 +75,10 @@ def main() -> None:
         if platform.system().lower() == "windows":
             st.info(
                 "Install 'pywin32' locally to enable the Word-based merge.",
-                icon="i",
             )
         else:
             st.warning(
                 "Microsoft Word automation is only available on Windows. Falling back to python-docx merge.",
-                icon="!",
             )
 
     uploads: Dict[str, List] = {}
