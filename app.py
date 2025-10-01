@@ -1,4 +1,4 @@
-
+﻿
 """Local CLI for assembling briefing books from DOCX parts."""
 
 import argparse
@@ -8,7 +8,7 @@ import tempfile
 from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE
@@ -80,6 +80,16 @@ def parse_args() -> argparse.Namespace:
         help="Path for the generated DOCX (default: combined_book.docx).",
     )
     parser.add_argument(
+        "--template",
+        default="testdocument.docx",
+        help="DOCX template used to seed the combined output (default: testdocument.docx).",
+    )
+    parser.add_argument(
+        "--section-style",
+        default="Heading 1",
+        help="Paragraph style name to use for section headings (default: Heading 1).",
+    )
+    parser.add_argument(
         "--method",
         choices=["auto", "word", "python-docx"],
         default="auto",
@@ -107,6 +117,25 @@ def main() -> None:
     if not section_payloads:
         sys.exit("No DOCX files discovered in the sections order.")
 
+    template_candidate = Path(args.template).expanduser()
+    try:
+        template_candidate = template_candidate.resolve()
+    except FileNotFoundError:
+        pass
+
+    template_path: Optional[Path]
+    if template_candidate.is_file():
+        template_path = template_candidate
+    else:
+        if not args.quiet:
+            print(
+                f"Template file not found: {template_candidate}. Falling back to default python-docx styles.",
+                file=sys.stderr,
+            )
+        template_path = None
+
+    heading_style = args.section_style
+
     filtered_sections: List[Tuple[str, List[LocalUpload]]] = []
     for section, paths in section_payloads:
         uploads = [LocalUpload(path) for path in paths]
@@ -121,9 +150,9 @@ def main() -> None:
         method = "python-docx"
 
     if method == "word":
-        buffer = build_combined_document_with_word(filtered_sections)
+        buffer = build_combined_document_with_word(filtered_sections, template_path, heading_style)
     else:
-        buffer = build_combined_document(filtered_sections)
+        buffer = build_combined_document(filtered_sections, template_path, heading_style)
 
     output_path = Path(args.output).resolve()
     output_path.write_bytes(buffer.getvalue())
@@ -182,12 +211,64 @@ def word_automation_available() -> bool:
     return True
 
 
-def build_combined_document(filtered_sections: List[Tuple[str, List]]) -> BytesIO:
-    combined = Document()
+def create_combined_base_document(template_path: Optional[Path]) -> Document:
+    if template_path:
+        combined = Document(template_path)
+        clear_document_body(combined)
+    else:
+        combined = Document()
+    return combined
+
+
+def clear_document_body(document: Document) -> None:
+    body = document.element.body
+    for child in list(body):
+        if child.tag == qn("w:sectPr"):
+            continue
+        body.remove(child)
+
+
+def extract_document_section_properties(document: Document) -> Optional[OxmlElement]:
+    body = document.element.body
+    sect_pr_nodes = body.xpath('./w:sectPr')
+    if sect_pr_nodes:
+        return deepcopy(sect_pr_nodes[-1])
+    paragraph_sect_pr_nodes = body.xpath('./w:p/w:pPr/w:sectPr')
+    if paragraph_sect_pr_nodes:
+        return deepcopy(paragraph_sect_pr_nodes[-1])
+    return None
+
+
+def apply_section_properties_to_paragraph(paragraph, sect_pr: Optional[OxmlElement]) -> None:
+    if sect_pr is None:
+        return
+    p_pr = paragraph._p.get_or_add_pPr()
+    for existing in p_pr.xpath('./w:sectPr'):
+        p_pr.remove(existing)
+    p_pr.append(deepcopy(sect_pr))
+
+
+def set_final_section_properties(document: Document, sect_pr: Optional[OxmlElement]) -> None:
+    if sect_pr is None:
+        return
+    body = document.element.body
+    for existing in body.xpath('./w:sectPr'):
+        body.remove(existing)
+    body.append(deepcopy(sect_pr))
+
+
+def build_combined_document(
+    filtered_sections: List[Tuple[str, List]],
+    template_path: Optional[Path],
+    heading_style_name: str,
+) -> BytesIO:
+    combined = create_combined_base_document(template_path)
     remove_initial_paragraph_if_empty(combined)
-    section_style_name = ensure_section_style(combined)
+    section_style_name = ensure_section_style(combined, heading_style_name)
 
     add_table_of_contents(combined, section_style_name)
+
+    last_section_properties = None
 
     for section_name, files in filtered_sections:
         heading_text = section_name
@@ -204,12 +285,25 @@ def build_combined_document(filtered_sections: List[Tuple[str, List]]) -> BytesI
                 strip_leading_empty_paragraphs(source_doc)
             section_documents.append(source_doc)
 
+        section_properties = (
+            extract_document_section_properties(section_documents[0])
+            if section_documents
+            else None
+        )
+
         heading = combined.add_paragraph(heading_text, style=section_style_name)
         heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
         heading.paragraph_format.page_break_before = True
 
+        if section_properties is not None:
+            apply_section_properties_to_paragraph(heading, section_properties)
+            last_section_properties = section_properties
+
         for source_doc in section_documents:
             append_document_body(combined, source_doc)
+
+    if last_section_properties is not None:
+        set_final_section_properties(combined, last_section_properties)
 
     apply_footer_with_page_numbers(combined)
 
@@ -219,7 +313,12 @@ def build_combined_document(filtered_sections: List[Tuple[str, List]]) -> BytesI
     return output_buffer
 
 
-def build_combined_document_with_word(filtered_sections: List[Tuple[str, List]]) -> BytesIO:
+
+def build_combined_document_with_word(
+    filtered_sections: List[Tuple[str, List]],
+    template_path: Optional[Path],
+    heading_style_name: str,
+) -> BytesIO:
     if platform.system().lower() != "windows":
         raise RuntimeError("Microsoft Word automation is only supported on Windows.")
 
@@ -255,25 +354,45 @@ def build_combined_document_with_word(filtered_sections: List[Tuple[str, List]])
             section_payloads.append((heading_text, file_paths))
 
         output_path = tmpdir / "combined.docx"
-        compose_sections_with_word(section_payloads, output_path)
+        compose_sections_with_word(section_payloads, output_path, template_path, heading_style_name)
         return BytesIO(output_path.read_bytes())
 
 
-def compose_sections_with_word(section_payloads: List[Tuple[str, List[Path]]], output_path: Path) -> None:
+def compose_sections_with_word(
+    section_payloads: List[Tuple[str, List[Path]]],
+    output_path: Path,
+    template_path: Optional[Path],
+    heading_style_name: str,
+) -> None:
     import win32com.client as win32  # type: ignore
 
     word = win32.Dispatch("Word.Application")
     word.Visible = False
     doc = None
+    fallback_style_used = False
     try:
-        doc = word.Documents.Add()
+        template_to_use = None
+        if template_path and template_path.exists():
+            template_to_use = str(template_path)
+        if template_to_use:
+            doc = word.Documents.Add(Template=template_to_use)
+            doc.Content.Delete()
+        else:
+            doc = word.Documents.Add()
         selection = word.Selection
-        insert_table_of_contents_word(doc, selection)
+        selection.EndKey(Unit=WD_STORY)
+        insert_table_of_contents_word(doc, selection, heading_style_name)
 
         for index, (heading_text, files) in enumerate(section_payloads):
             if index > 0:
                 selection.InsertBreak(WD_PAGE_BREAK)
-            selection.Style = "Heading 1"
+            try:
+                selection.Style = heading_style_name
+            except Exception:
+                if not fallback_style_used:
+                    print(f"Warning: Word style '{heading_style_name}' not found; falling back to 'Heading 1'.", file=sys.stderr)
+                    fallback_style_used = True
+                selection.Style = "Heading 1"
             selection.TypeText(heading_text)
             selection.TypeParagraph()
             for file_path in files:
@@ -290,11 +409,14 @@ def compose_sections_with_word(section_payloads: List[Tuple[str, List[Path]]], o
         word.Quit()
 
 
-def insert_table_of_contents_word(doc, selection) -> None:
+def insert_table_of_contents_word(doc, selection, heading_style_name: str):
     selection.Style = "Title"
     selection.TypeText("Table of Contents")
     selection.TypeParagraph()
-    doc.TablesOfContents.Add(
+    added_styles = None
+    if heading_style_name and heading_style_name != "Heading 1":
+        added_styles = f"{heading_style_name},1"
+    toc = doc.TablesOfContents.Add(
         Range=selection.Range,
         UseHeadingStyles=True,
         UpperHeadingLevel=1,
@@ -302,11 +424,13 @@ def insert_table_of_contents_word(doc, selection) -> None:
         UseHyperlinks=True,
         IncludePageNumbers=True,
         RightAlignPageNumbers=True,
+        AddedStyles=added_styles,
     )
     selection.EndKey(Unit=WD_STORY)
     selection.TypeParagraph()
     selection.InsertBreak(WD_PAGE_BREAK)
     selection.EndKey(Unit=WD_STORY)
+    return toc
 
 
 def apply_footer_with_page_numbers_word(doc) -> None:
@@ -323,8 +447,7 @@ def _safe_stem(value: str) -> str:
     return stem or "section"
 
 
-def ensure_section_style(document: Document) -> str:
-    style_name = "BookMaker Section"
+def ensure_section_style(document: Document, style_name: str) -> str:
     try:
         document.styles[style_name]
         return style_name
@@ -332,7 +455,12 @@ def ensure_section_style(document: Document) -> str:
         pass
 
     section_style = document.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
-    section_style.base_style = document.styles["Heading 1"]
+    try:
+        base_style = document.styles['Heading 1']
+    except KeyError:
+        base_style = None
+    if base_style is not None:
+        section_style.base_style = base_style
     section_style.quick_style = True
     return style_name
 
@@ -443,3 +571,12 @@ def remove_initial_paragraph_if_empty(document: Document) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
