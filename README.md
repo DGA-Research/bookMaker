@@ -1,4 +1,4 @@
-# BookMaker CLI
+﻿# BookMaker CLI
 
 BookMaker assembles a single briefing book by stitching together per-section DOCX files in a fixed order. The CLI can merge files entirely in Python or, when available, automate Microsoft Word to preserve complex layouts.
 
@@ -52,6 +52,8 @@ Key options:
 - `--parts-dir`: Folder containing the DOCX parts (defaults to `bookParts`).
 - `--output`: Destination path for the combined DOCX (defaults to `combined_book.docx`).
 - `--method`: `auto` (default) tries Word automation first, then falls back to pure Python. Choose `word` to require Word automation or `python-docx` to force the Python-only merge.
+- `--template`: DOCX template that seeds the combined document styles (default: `testdocument.docx`).
+- `--section-style`: Paragraph style name applied to each section heading (default: `Heading 1`).
 - `--quiet`: Suppress progress output (warnings and errors still print).
 
 When the script finishes, open the resulting DOCX in Word and update the Table of Contents (Right-click the TOC > Update Field > Update entire table) so the page numbers reflect the final layout.
@@ -67,3 +69,4 @@ When the script finishes, open the resulting DOCX in Word and update the Table o
 - **Missing section message**: Ensure the DOCX exists and matches the expected file name exactly (including spaces and capitalization).
 - **`python-docx` merge issues**: Complex page layouts or macros may not carry over perfectly. Re-run with `--method word` on a machine with Microsoft Word installed for better fidelity.
 - **TOC shows placeholder text**: Open the output DOCX in Word and update the Table of Contents to refresh entries and page numbers.
+
